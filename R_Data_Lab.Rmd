@@ -1,0 +1,390 @@
+---
+title: 'UNFPA Data Fellows Workshop: R Data Lab'
+author: 
+- Amman, Jordan
+date: "24 October, 2019"
+output: 
+  html_document:
+    number_sections: yes
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Acknowledgement
+This design was inspired by Time Riffe's [Introduction to R for Demographers](https://timriffe.github.io/RforUNPD2019/) course.
+
+# Setting Up
+## Load in Useful R packages
+```{r "load_packages", message=FALSE, warning=FALSE}
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(ggrepel)
+```
+
+## Download World Bank ID4D Estimates
+The World Bank has released estimates of the number of individuals worldwide who lack proof of legal identity. More information is available [here](https://id4d.worldbank.org/global-dataset) and [here](https://id4d.worldbank.org/sites/id4d.worldbank.org/files/2018-08/ID4D%20Data%20Notes%20revised%20082918.pdf). Please download the following two `.xlsx` files and save them in a sub-directory called `Data/`:
+
+1. [2018 Findex Survey Data](https://id4d.worldbank.org/sites/id4d.worldbank.org/files/2018-08/Copy%20of%20ID4D-Findex%20survey%20data%20downloadable%20083118linked.xlsx)
+
+2. [2018 Global Dataset](https://development-data-hub-s3-public.s3.amazonaws.com/ddhfiles/94586/wb_id4d_dataset_2018_0.xlsx)
+
+# Load and Format the Data
+Loading in these two Excel files (particularly the Global Dataset) is a little tricky, because they are designed to facilitate point-and-click analysis in Excel.
+
+## Load in Global Dataset
+For the Global Dataset, the key information for us is saved in the `Unregistered Population Data` sheet in columns A through Y, rows 2-200. We can use the `read_excel()` function from the `readxl` package to load in this subset of the Excel workbook.
+```{r "load_global_statistics"}
+global_2018 <- read_excel(path="Data/ID4D_global_2018.xlsx", 
+                                    sheet="Unregistered Population Data", 
+                                    range="A2:Y200",
+                                    na=c("", "n/a"), 
+                                    skip=1,
+                                    col_names=TRUE) # the first row contains the variable names
+global_2018 %>% 
+  select("Economy", 
+           "Country Code", 
+           "Region",
+           "UPB Total",
+           "UPB in % of Population above Cut-off") %>%
+  head()
+```
+
+## Load in the Findex Dataset
+Loading in the Findex Dataset is much simpler.
+```{r "load_findex_dataset"}
+findex_2018 <- read_excel(path="Data/ID4D_Findex_survey.xlsx",
+                          sheet="Population (15+) without NID")
+names(findex_2018)
+findex_2018 %>% 
+  select("Economy", 
+           "Country code", 
+           "Region",
+           "Population (age 15+) \r\nwithout a national ID", ## note the "\r\n"
+           "Share of population (age 15+) without a national ID") %>%
+  head()
+```
+
+## Merge the Two Datasets Together
+We would like to merge the Global and Findex datasets together using country code. We first have to re-name the variable so it is the same in both datasets.
+```{r, "rename_county_code"}
+findex_2018 %>% select("Country code") %>% head()
+findex_2018 <- findex_2018 %>% rename("Country Code" = "Country code")
+findex_2018 %>% select("Country Code") %>% head()
+```
+Now we can perform the merge using the `left_join()` function from the `dplyr` package. (The `join()` help file contains information about different types of joins.
+)
+```{r, "perform_merge"}
+merged_ID4D <- left_join(x=findex_2018, 
+                         y=global_2018, 
+                         by="Country Code")
+merged_ID4D %>% 
+  select("Economy.x", ## note the change from "Economy"
+           "Country Code", 
+           "UPB Total",
+           "UPB in % of Population above Cut-off",
+           "Population (age 15+) \r\nwithout a national ID", ## note the "\r\n"
+           "Share of population (age 15+) without a national ID") %>%
+  head()
+```
+
+## Rename Variables
+It turns out that Ivory Coast has a different name in each of the two datasets
+```{r, "check_country_name"}
+merged_ID4D$Economy.x[!(merged_ID4D$Economy.x %in% merged_ID4D$Economy.y)]
+merged_ID4D$Economy.y[!(merged_ID4D$Economy.x %in% merged_ID4D$Economy.y)]
+```
+One way to fix this is by re-naming with
+```{r, "recode_Ivory_Coast"}
+merged_ID4D$Economy.y[grep("Ivoire", merged_ID4D$Economy.y)] <- "Cote d'Ivoire"
+merged_ID4D$Economy.x[grep("Ivoire", merged_ID4D$Economy.x)] <- "Cote d'Ivoire"
+```
+We can check that this re-naming worked with
+```{r, "check_recode_Ivory_Coast"}
+merged_ID4D$Economy.y[!(merged_ID4D$Economy.x %in% merged_ID4D$Economy.y)]
+```
+
+## Recode Variables
+In the Global Dataset, some of the estimated males/females lacking legal ID are incorrectly coded as NAs instead of 0s
+```{r, "inconsistency_global_zeros"}
+merged_ID4D %>% filter(`UPB Total` == 0) %>%
+                select("Economy.x", "UPB Total", "UPB Male", 
+                       "UPB Female", "% of UPB that is Female") %>%
+                head()
+```
+which we can fix with
+```{r, "fix_inconsistency_global_zeros"}
+merged_ID4D[merged_ID4D[, "UPB Total"] == 0 & is.na(merged_ID4D[, "UPB Male"]), "UPB Male"] <- 0
+merged_ID4D[merged_ID4D[, "UPB Total"] == 0 & is.na(merged_ID4D[, "UPB Female"]), "UPB Female"] <- 0
+merged_ID4D[merged_ID4D[, "UPB Total"] == 0 & is.na(merged_ID4D[, "% of UPB that is Female"]), 
+            "% of UPB that is Female"] <- 0
+```
+We can check that this re-coding worked with
+```{r, "check_inconsistency_global_zeros"}
+merged_ID4D %>% filter(`UPB Total` == 0) %>%
+                select("Economy.x", "UPB Total", "UPB Male", 
+                       "UPB Female", "% of UPB that is Female") %>%
+                head()
+```
+
+## Define New Variables
+The Global Dataset does not directly report the estimated *percentage* of men and women lacking proof of legal ID, but instead only shows the estimated percentage of the population lacking legal IDs that is female (with the variable `% of UPB that is Female`). But we can compute the estimated percentage we are after with
+```{r, "define_shares_global"}
+merged_ID4D[, "% of UPB that is Male"] <- 100 - merged_ID4D[, "% of UPB that is Female"]
+merged_ID4D[, "global_share_female"] <- merged_ID4D[, "% of UPB that is Female"] / 100 *
+                                        merged_ID4D[, "UPB in % of Population above Cut-off"] / 100
+merged_ID4D[, "global_share_male"] <-   merged_ID4D[, "% of UPB that is Male"] / 100 *
+                                        merged_ID4D[, "UPB in % of Population above Cut-off"] / 100
+```
+While we're at it, we can also create a variable with the estimated percentage of all adults lacking legal ID in the Global Dataset that is on the same scale (0 to 1) as it is reported in the Findex
+```{r, "re_scale_percentage_global"}
+merged_ID4D[, "global_share_all"] <-  merged_ID4D[, "UPB in % of Population above Cut-off"] / 100
+```
+which gives us
+```{r, "view_shares_global"}
+merged_ID4D %>% select("Economy.x",
+                       "UPB Total",
+                      "% of UPB that is Male",
+                       "global_share_female",
+                       "global_share_male") %>%
+                 head()
+```
+
+# Produce Scatterplots
+What follows is an effort to show a representative flow from a clearly formatted dataset to clear visualizations. This workflow omits inevitable debugging, searching for names of functions and arguments, etc. and instead focuses on how the visualizations themselves change iteratively throughout the process.
+
+## A First Attempt
+```{r, "scatterplots_first_attempt"}
+g_first <- ggplot(merged_ID4D, 
+      aes_string(x="`Population (age 15+) \r\nwithout a national ID`",
+                  y="`UPB Total`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Number of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0,  
+           max(merged_ID4D[, c("Population (age 15+) \r\nwithout a national ID",
+                               "UPB Total")], na.rm=TRUE)),
+           ylim=c(0,  
+           max(merged_ID4D[, c("Population (age 15+) \r\nwithout a national ID",
+                               "UPB Total")], na.rm=TRUE))) + 
+      geom_abline(intercept=0, slope=1)
+g_first
+```
+
+We can see that a very large estimated `UPB Total` is substantially stretching out the scale.
+```{r, "finding_largest_UPB_estimate"}
+merged_ID4D %>% filter(`UPB Total` > 1.5e+08) %>% select(`Economy.x`) %>% as.character()
+```
+So it turns out the estimate is for India.
+
+## A Second Attempt
+We can first explore what the plot looks like when India is excluded.
+```{r, "scatterplots_second_attempt"}
+merged_ID4D_no_India <- merged_ID4D %>%
+                      filter(`Economy.x` != "India")
+g_second <- ggplot(merged_ID4D_no_India,
+      aes_string(x="`Population (age 15+) \r\nwithout a national ID`",
+                  y="`UPB Total`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Number of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE)),
+                ylim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE))) +
+      geom_abline(intercept=0, slope=1)
+g_second
+```
+
+## A Third Attempt
+Now let's label the points to see which country is which
+```{r, "scatterplots_third_attempt"}
+g_third <- ggplot(merged_ID4D_no_India,
+      aes_string(x="`Population (age 15+) \r\nwithout a national ID`",
+                  y="`UPB Total`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Number of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE)),
+                    ylim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE))) +
+      geom_abline(intercept=0, slope=1) +
+      geom_text(aes(label=Economy.x), ## labeling points
+                hjust=0, vjust=0)     ## setting size and position of labels
+g_third
+```
+
+## A Fourth Attempt
+Let's try labeling only a subset of the points
+```{r, "scatterplots_fourth_attempt"}
+g_fourth <- ggplot(merged_ID4D_no_India,
+      aes_string(x="`Population (age 15+) \r\nwithout a national ID`",
+                  y="`UPB Total`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Number of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE)),
+                ylim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE))) + 
+      geom_abline(intercept=0, slope=1) +
+      geom_text(data=merged_ID4D_no_India[ ## overriding the default, which uses data underlying the plot
+      merged_ID4D_no_India[, "Population (age 15+) \r\nwithout a national ID"] > 8e+06 |
+      merged_ID4D_no_India[, "UPB Total"] > 8e+06, ],
+                aes(label=Economy.x), 
+                hjust=0, vjust=0)     
+g_fourth
+```
+
+## A Fifth Attempt
+Since there are still some labels that overlap each other, we can replace the `geom_text()` function with `geom_text_repel()` from the ``ggrepel`` package to improve the spacing between labels.
+
+```{r, "scatterplots_fifth_attempt"}
+g_fifth <- ggplot(merged_ID4D_no_India,
+      aes_string(x="`Population (age 15+) \r\nwithout a national ID`",
+                  y="`UPB Total`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Number of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE)),
+                ylim=c(0,
+                max(merged_ID4D_no_India[, c("Population (age 15+) \r\nwithout a national ID",
+                                           "UPB Total")],
+                    na.rm=TRUE))) + 
+      geom_abline(intercept=0, slope=1) +
+      geom_text_repel(data=merged_ID4D_no_India[ ## instead of geom_text()
+      merged_ID4D_no_India[, "Population (age 15+) \r\nwithout a national ID"] > 8e+06 |
+      merged_ID4D_no_India[, "UPB Total"] > 8e+06, ],
+                aes(label=Economy.x), 
+                hjust=0, vjust=0)     
+g_fifth
+```
+
+## A Sixth Attempt
+It is probably more useful to plot the estimated individuals lacking proof of legal IDs as as percentages of the population, rather than as totals. (This also allows us to choose fixed axis limits and to add India back into the plot without distorting the scale)
+
+```{r, "scatterplots_sixth_attempt"}
+g_sixth <- ggplot(merged_ID4D,
+      aes_string(x="`Share of population (age 15+) without a national ID`",
+                  y="`global_share_all`",
+                  label="Economy.x")) + 
+      geom_point(na.rm=TRUE) +
+      labs(title=paste("Estimated Percentage of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0, 1), ylim=c(0, 1)) +  ## limits are no longer dynamic
+      geom_abline(intercept=0, slope=1) + 
+      geom_text_repel(data=merged_ID4D[ ## instead of geom_text()
+      merged_ID4D[, "Share of population (age 15+) without a national ID"] > 0.30 |
+      merged_ID4D[, "global_share_all"] > 0.30, ],
+                aes(label=Economy.x), 
+                hjust=0, vjust=0)     
+g_sixth
+```
+We can see that the labeled countries are quite different than in the plots based on total estimates.
+
+## A Seventh Attempt
+The total population in each country, however, provides important context that we might like to include in the plot even if it is not reflected in the axes themselves. One option is to make the size of the plotted points proportional to that country's population. 
+
+However, we actually did not load in country populations when we first read in the ID4D datasets. If we look through the ID4D Global Dataset, we can see the variable `Total Country Population` saved in column `AI`. Let's quickly merge that into our existing `merged_ID4D` and `merged_ID4D_no_India` datasets.
+
+```{r, "merge_in_total_populations"}
+total_population <- read_excel(path="Data/ID4D_global_2018.xlsx", 
+                                    sheet="Unregistered Population Data", 
+                                    range="AI2:AI200",
+                                    na=c("", "n/a"), 
+                                    skip=1,
+                                    col_names=TRUE) # the first row contains the variable names
+total_population <- cbind(global_2018[, "Country Code"],  ## need to have in country code to do the merge
+                          total_population)
+merged_ID4D <- merged_ID4D %>% left_join(., total_population, by="Country Code")
+merged_ID4D_no_India <- merged_ID4D_no_India %>% left_join(., total_population, by="Country Code")
+merged_ID4D %>% select("Economy.x", "Total Country Population")
+```
+
+Now the total population is recorded in the dataset, we can make point sizes proportional to total population by simply adding an extra argument to our call to `geom_point()`.
+```{r, "scatterplots_seventh_attempt"}
+g_seventh <- ggplot(merged_ID4D,
+      aes_string(x="`Share of population (age 15+) without a national ID`",
+                  y="`global_share_all`",
+                  label="Economy.x")) + 
+      geom_point(aes(size=`Total Country Population`), ## this makes point sizes proportional to population
+                 colour="darkorange",
+                 na.rm=TRUE) + 
+      labs(title=paste("Estimated Percentage of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0, 1), ylim=c(0, 1)) +  ## limits are no longer dynamic
+      geom_abline(intercept=0, slope=1) + 
+      geom_text_repel(data=merged_ID4D[ ## instead of geom_text()
+      merged_ID4D[, "Share of population (age 15+) without a national ID"] > 0.35 |
+      merged_ID4D[, "global_share_all"] > 0.35, ],
+                aes(label=Economy.x), 
+                hjust=0, vjust=0)     
+g_seventh
+```
+
+## An Eighth Attempt
+We would like to improve the point sizing in a few ways. For one thing, the scientific notation is not reader-friendly. We would also like to see more variability in point sizes, rather than most points appearing roughly the same (small) size. This was challenging (for me at least!), but the following plot offers at least some improvement through use of the `scale_size_continuous()` function.
+
+```{r, "scatterplots_eight_attempt"}
+options(scipen=999) ## this heavily discourages the display of scientific notation
+g_eighth <- ggplot(merged_ID4D,
+      aes_string(x="`Share of population (age 15+) without a national ID`",
+                  y="`global_share_all`",
+                  label="Economy.x")) + 
+      geom_point(aes(size=`Total Country Population`),
+                 position="jitter", ## jitter is not too helpful here because the variables are not categorical
+                 colour="darkorange",
+                 na.rm=TRUE) + 
+      labs(title=paste("Estimated Percentage of Adults Lacking Proof of Legal ID"),
+              x="Estimate from ID4D-Findex",
+              y="Estimate from ID4D-Global Dataset") +
+      coord_cartesian(xlim=c(0, 1), ylim=c(0, 1)) +  
+      scale_size_continuous(trans="identity",
+                            range=c(2, 9),
+                            breaks=c(1e+06, 1e+07, 3e+07, 6e+07, 1e+08, 1.3e+08),
+                            limits=c(1e+06, 3e+08),
+                            labels=as.character(c(1e+06, 1e+07, 3e+07, 6e+07, 1e+08, 1.3e+08))) + 
+      geom_abline(intercept=0, slope=1) + 
+      geom_text_repel(data=merged_ID4D[ 
+      merged_ID4D[, "Share of population (age 15+) without a national ID"] > 0.35 |
+      merged_ID4D[, "global_share_all"] > 0.35, ],
+                aes(label=Economy.x), 
+                hjust=0, vjust=0)     
+g_eighth
+```
+
+
+
+
+
