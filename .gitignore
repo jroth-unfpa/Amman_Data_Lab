@@ -1,7 +1,7 @@
 # History files
 .Rhistory
 .Rapp.history
-R_Data_Lab_files
+R_Data_Lab_files/
 
 # Session Data files
 .RData
